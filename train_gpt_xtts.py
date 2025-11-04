@@ -148,6 +148,12 @@ def train_gpt(metadatas, num_epochs, batch_size, grad_acumm, output_path, max_au
 
     config.load_json(XTTS_CONFIG_FILE)
 
+    # Text processing configuration for Sinhala (grapheme-based approach)
+    # Sinhala uses grapheme-based text processing, not phoneme conversion
+    config.use_phonemes = False  # Changed from True to False for Sinhala
+    config.phoneme_language = None  # Changed from "en-us" to None for Sinhala
+    config.text_cleaner = "english_cleaners"  # Works for all scripts including Sinhala
+
     config.epochs = num_epochs
     config.output_path = OUT_PATH
     config.model_args = model_args
