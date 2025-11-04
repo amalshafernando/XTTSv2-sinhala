@@ -208,3 +208,7 @@ __marimo__/
 
 
 instructions/
+ 
+# Text files
+*.txt
+*.TXT

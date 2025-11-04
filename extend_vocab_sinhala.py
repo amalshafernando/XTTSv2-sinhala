@@ -1,316 +1,484 @@
+#!/usr/bin/env python3
 """
-Extend XTTS-v2 vocabulary and configuration for Sinhala script.
-This script creates a BPE tokenizer trained specifically on Sinhala text
-and updates the config.json to register 'si' as a supported language.
+Extended vocabulary and configuration for Sinhala language in XTTS-v2
+
+This script:
+1. Loads Sinhala texts from metadata CSV
+2. Creates BPE tokenizer using ByteLevel pre-tokenization
+3. Saves extended vocabulary (15,000 tokens)
+4. Updates config.json for Sinhala language support
+
+Key improvements over original:
+- ByteLevel pre-tokenizer (perfect for Sinhala Unicode)
+- No subdirectory creation (saves directly to output_path)
+- Robust error handling with helpful messages
+- Sinhala-specific configuration
 """
 
 import argparse
 import json
 import os
-import shutil
-
+from pathlib import Path
 import pandas as pd
 from tokenizers import Tokenizer
 from tokenizers.models import BPE
+from tokenizers.trainers import BpeTrainer
 from tokenizers.pre_tokenizers import ByteLevel
 from tokenizers.processors import ByteLevel as ByteLevelProcessor
-from tokenizers.trainers import BpeTrainer
-from tqdm import tqdm
+from tokenizers.decoders import ByteLevel as ByteLevelDecoder
+import sys
 
 
-def combine_tokenizers(old_tokenizer_dir, new_tokenizer_dir, save_dir):
-    """
-    Combine old and new tokenizer vocabularies.
+class SinhalaBPETokenizer:
+    """Handles Sinhala tokenization with ByteLevel BPE."""
     
-    Args:
-        old_tokenizer_dir: Path to old tokenizer directory
-        new_tokenizer_dir: Path to new tokenizer directory
-        save_dir: Path to save merged tokenizer
-    """
-    # Load both vocab.json files
-    with open(os.path.join(old_tokenizer_dir, 'vocab.json'), 'r', encoding='utf-8') as f:
-        json1 = json.load(f)
+    SINHALA_UNICODE_START = 0x0D80
+    SINHALA_UNICODE_END = 0x0DFF
     
-    with open(os.path.join(new_tokenizer_dir, 'vocab.json'), 'r', encoding='utf-8') as f:
-        json2 = json.load(f)
+    def __init__(self, vocab_size=15000):
+        """
+        Initialize Sinhala tokenizer.
+        
+        Args:
+            vocab_size: Size of BPE vocabulary (default: 15000)
+        """
+        self.vocab_size = vocab_size
+        self.tokenizer = None
+        self.vocab = None
     
-    # Create a new vocabulary with union of both
-    new_vocab = {}
-    idx = 0
+    def load_sinhala_texts(self, metadata_path):
+        """
+        Load Sinhala texts from metadata CSV.
+        
+        Expected format: audio_file|text|speaker_name
+        Text is expected in column 1 (0-indexed)
+        
+        Args:
+            metadata_path: Path to metadata_train.csv
+            
+        Returns:
+            List of Sinhala text strings
+            
+        Raises:
+            FileNotFoundError: If metadata file not found
+            ValueError: If CSV format is incorrect
+        """
+        print(f"\n📖 Loading Sinhala texts from: {metadata_path}")
+        
+        if not os.path.exists(metadata_path):
+            raise FileNotFoundError(f"❌ Metadata file not found: {metadata_path}")
+        
+        try:
+            df = pd.read_csv(metadata_path, sep='|', encoding='utf-8', header=None)
+            print(f"✅ CSV loaded successfully")
+        except Exception as e:
+            raise ValueError(f"❌ Error reading CSV: {str(e)}")
+        
+        if df.shape[1] < 2:
+            raise ValueError(f"❌ CSV must have at least 2 columns (audio_file|text|speaker_name)")
+        
+        # Extract text column (typically column 1)
+        texts = df.iloc[:, 1].tolist()
+        
+        print(f"✅ Loaded {len(texts)} Sinhala text samples")
+        
+        # Show sample texts
+        print(f"\n📝 Sample Sinhala texts:")
+        for i, text in enumerate(texts[:3]):
+            print(f"  {i+1}. {text[:60]}{'...' if len(text) > 60 else ''}")
+        
+        # Statistics
+        total_chars = sum(len(text) for text in texts)
+        sinhala_chars = sum(
+            sum(1 for char in text 
+                if self.SINHALA_UNICODE_START <= ord(char) <= self.SINHALA_UNICODE_END)
+            for text in texts
+        )
+        
+        print(f"\n📊 Text Statistics:")
+        print(f"   - Total characters: {total_chars:,}")
+        print(f"   - Sinhala characters: {sinhala_chars:,} ({100*sinhala_chars/max(total_chars,1):.1f}%)")
+        
+        return texts
     
-    # Add words from old tokenizer first
-    for word in json1.keys():
-        if word not in new_vocab.keys():
-            new_vocab[word] = idx
-            idx += 1
+    def train_tokenizer(self, texts):
+        """
+        Train BPE tokenizer on Sinhala texts.
+        
+        Uses ByteLevel pre-tokenizer which is optimal for Unicode scripts
+        including Sinhala (abugida script).
+        
+        Args:
+            texts: List of Sinhala text strings
+            
+        Raises:
+            ValueError: If training fails
+        """
+        print(f"\n{'='*80}")
+        print(f"TRAINING SINHALA BPE TOKENIZER")
+        print(f"Target Vocabulary Size: {self.vocab_size}")
+        print(f"{'='*80}")
+        
+        try:
+            # Initialize tokenizer with BPE model
+            self.tokenizer = Tokenizer(BPE(unk_token="<|endoftext|>"))
+            
+            # Set pre-tokenizer to ByteLevel (crucial for Sinhala Unicode)
+            self.tokenizer.pre_tokenizer = ByteLevel()
+            self.tokenizer.post_processor = ByteLevelProcessor()
+            self.tokenizer.decoder = ByteLevelDecoder()
+            
+            print(f"\n✅ Tokenizer initialized with ByteLevel pre-tokenizer")
+            
+            # Create BPE trainer
+            trainer = BpeTrainer(
+                vocab_size=self.vocab_size,
+                min_frequency=2,  # Prevents rare tokens
+                special_tokens=[
+                    "<|endoftext|>",
+                    "<|im_start|>",
+                    "<|im_end|>",
+                    "<pad>",
+                    "<unk>",
+                ],
+                show_progress=True
+            )
+            
+            print(f"✅ BpeTrainer configured")
+            print(f"   - Min frequency: 2")
+            print(f"   - Special tokens: 5")
+            
+            # Train on Sinhala corpus
+            print(f"\n🔧 Training BPE tokenizer on {len(texts)} Sinhala texts...")
+            self.tokenizer.train_from_iterator(
+                iterator=texts,
+                trainer=trainer,
+                length=len(texts)
+            )
+            
+            self.vocab = self.tokenizer.get_vocab()
+            print(f"\n✅ Training completed!")
+            print(f"   - Actual vocabulary size: {len(self.vocab):,} tokens")
+            
+            # Test tokenization
+            self._test_tokenization(texts[:3])
+            
+        except Exception as e:
+            raise ValueError(f"❌ Tokenizer training failed: {str(e)}")
     
-    # Add words from new tokenizer
-    for word in json2.keys():
-        if word not in new_vocab.keys():
-            new_vocab[word] = idx
-            idx += 1
+    def _test_tokenization(self, texts):
+        """Test tokenization on sample texts."""
+        print(f"\n✅ Testing tokenization on samples:")
+        
+        unk_tokens_found = False
+        for text in texts[:3]:
+            encoding = self.tokenizer.encode(text)
+            
+            # Check for UNK tokens (typically ID 0 or 4)
+            unk_count = encoding.ids.count(0) + encoding.ids.count(4)
+            
+            if unk_count > 0:
+                unk_tokens_found = True
+            
+            status = "✅ No UNK" if unk_count == 0 else f"⚠️ {unk_count} UNK"
+            print(f"   Text: {text[:50]:50} → {len(encoding.tokens):3} tokens [{status}]")
+        
+        if not unk_tokens_found:
+            print(f"\n   ✅ EXCELLENT: No UNK tokens in test samples!")
+        
+        return unk_tokens_found
     
-    # Make the directory if necessary
-    os.makedirs(save_dir, exist_ok=True)
-    
-    # Save the merged vocab
-    with open(os.path.join(save_dir, 'vocab.json'), 'w', encoding='utf-8') as fp:
-        json.dump(new_vocab, fp, ensure_ascii=False, indent=2)
-    
-    # Merge the two merges files
-    # Concatenate them, but ignore the first line of the second file
-    if os.path.exists(os.path.join(old_tokenizer_dir, 'merges.txt')):
-        shutil.copy(os.path.join(old_tokenizer_dir, 'merges.txt'), os.path.join(save_dir, 'merges.txt'))
-    
-    # Append new merges (skip first line which is version info)
-    if os.path.exists(os.path.join(new_tokenizer_dir, 'merges.txt')):
-        with open(os.path.join(new_tokenizer_dir, 'merges.txt'), 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-            if len(lines) > 1:
-                with open(os.path.join(save_dir, 'merges.txt'), 'a', encoding='utf-8') as f:
-                    f.writelines(lines[1:])  # Skip first line
+    def save_vocabulary(self, output_path):
+        """
+        Save tokenizer and vocabulary to files.
+        
+        CRITICAL: Saves directly to output_path, NOT a subdirectory
+        This ensures train_gpt_xtts.py finds vocab.json at the expected location
+        
+        Args:
+            output_path: Directory to save files
+            
+        Returns:
+            Tuple of (vocab_file_path, tokenizer_file_path)
+            
+        Raises:
+            ValueError: If saving fails
+        """
+        print(f"\n{'='*80}")
+        print(f"SAVING VOCABULARY")
+        print(f"{'='*80}")
+        
+        # Create output directory
+        os.makedirs(output_path, exist_ok=True)
+        print(f"\n✅ Output directory created: {output_path}")
+        
+        try:
+            # Save vocabulary as JSON (CRITICAL: no subdirectory)
+            vocab_file = os.path.join(output_path, "vocab.json")
+            with open(vocab_file, 'w', encoding='utf-8') as f:
+                json.dump(self.vocab, f, ensure_ascii=False, indent=2)
+            
+            file_size = os.path.getsize(vocab_file) / 1024
+            print(f"✅ Vocabulary saved: {vocab_file}")
+            print(f"   - File size: {file_size:.1f} KB")
+            print(f"   - Tokens: {len(self.vocab):,}")
+            
+            # Save tokenizer in native format
+            tokenizer_file = os.path.join(output_path, "tokenizer.json")
+            self.tokenizer.save(tokenizer_file)
+            
+            tokenizer_size = os.path.getsize(tokenizer_file) / 1024
+            print(f"✅ Tokenizer saved: {tokenizer_file}")
+            print(f"   - File size: {tokenizer_size:.1f} KB")
+            
+            return vocab_file, tokenizer_file
+            
+        except Exception as e:
+            raise ValueError(f"❌ Error saving vocabulary: {str(e)}")
 
 
-def extend_tokenizer(args):
-    """
-    Extend the XTTS-v2 tokenizer with Sinhala-specific vocabulary.
+class ConfigUpdater:
+    """Updates XTTS config.json for Sinhala language support."""
     
-    Args:
-        args: Command line arguments
-    """
-    print("=" * 60)
-    print("EXTENDING VOCABULARY FOR SINHALA")
-    print("=" * 60)
+    @staticmethod
+    def find_config_file(search_paths):
+        """
+        Find config.json in common locations.
+        
+        Args:
+            search_paths: List of paths to search
+            
+        Returns:
+            Path to config.json or None if not found
+        """
+        print(f"\n🔍 Searching for config.json...")
+        
+        for path in search_paths:
+            if os.path.exists(path):
+                print(f"✅ Found: {path}")
+                return path
+            else:
+                print(f"   ℹ️ Not found: {path}")
+        
+        print(f"❌ config.json not found in any searched locations")
+        return None
     
-    root = os.path.join(args.output_path, "XTTS_v2.0_original_model_files/")
-    
-    # Check if required files exist
-    vocab_json_path = os.path.join(root, "vocab.json")
-    if not os.path.exists(vocab_json_path):
-        raise FileNotFoundError(f"Original vocab.json not found at {vocab_json_path}. Please download XTTS-v2 model first.")
-    
-    print(f"\n[1/6] Backing up existing tokenizer files")
-    old_tokenizer_path = os.path.join(root, "old_tokenizer/")
-    os.makedirs(old_tokenizer_path, exist_ok=True)
-    # Copy existing vocab/merges into backup folder
-    shutil.copy(os.path.join(root, "vocab.json"), os.path.join(old_tokenizer_path, "vocab.json"))
-    merges_src = os.path.join(root, "merges.txt")
-    if os.path.exists(merges_src):
-        shutil.copy(merges_src, os.path.join(old_tokenizer_path, "merges.txt"))
-    print(f"    Saved existing tokenizer to {old_tokenizer_path}")
-    
-    # Load Sinhala text from metadata
-    print(f"\n[2/6] Loading Sinhala text from {args.metadata_path}")
-    if not os.path.exists(args.metadata_path):
-        raise FileNotFoundError(f"Metadata file not found: {args.metadata_path}")
-    
-    traindf = pd.read_csv(args.metadata_path, sep="|")
-    if 'text' not in traindf.columns:
-        raise ValueError("Metadata file must contain 'text' column")
-    
-    texts = traindf.text.tolist()
-    print(f"    Loaded {len(texts)} text samples")
-    
-    # Create new BPE tokenizer with ByteLevel pre-tokenizer
-    print(f"\n[3/6] Creating new BPE tokenizer with vocabulary size {args.vocab_size}")
-    new_tokenizer = Tokenizer(BPE(unk_token="<unk>"))
-    new_tokenizer.pre_tokenizer = ByteLevel(add_prefix_space=True)
-    
-    # Set up trainer with special tokens
-    special_tokens = args.special_tokens + [f"[{args.language}]"]
-    trainer = BpeTrainer(
-        vocab_size=args.vocab_size,
-        special_tokens=special_tokens,
-        min_frequency=2
-    )
-    
-    # Train tokenizer on Sinhala text
-    print(f"    Training tokenizer on Sinhala text...")
-    new_tokenizer.train_from_iterator(iter(texts), trainer=trainer)
-    
-    # Add special tokens
-    new_tokenizer.add_special_tokens(special_tokens)
-    
-    # Set post-processor
-    new_tokenizer.post_processor = ByteLevelProcessor(trim_offsets=True)
-    
-    # Save new tokenizer
-    new_tokenizer_path = os.path.join(root, "new_tokenizer/")
-    os.makedirs(new_tokenizer_path, exist_ok=True)
-    new_tokenizer.model.save(new_tokenizer_path)
-    print(f"    Saved new tokenizer to {new_tokenizer_path}")
-    
-    # Merge tokenizers
-    print(f"\n[4/6] Merging old and new tokenizers")
-    merged_tokenizer_path = os.path.join(root, "merged_tokenizer/")
-    combine_tokenizers(
-        old_tokenizer_path,
-        new_tokenizer_path,
-        merged_tokenizer_path
-    )
-    print(f"    Merged tokenizer saved to {merged_tokenizer_path}")
-    
-    # Overwrite original vocab/merges with merged ones
-    print(f"\n[5/6] Overwriting original vocab/merges with merged tokenizer")
-    shutil.copy(os.path.join(merged_tokenizer_path, 'vocab.json'), os.path.join(root, 'vocab.json'))
-    merged_merges = os.path.join(merged_tokenizer_path, 'merges.txt')
-    if os.path.exists(merged_merges):
-        shutil.copy(merged_merges, os.path.join(root, 'merges.txt'))
-    print(f"    Replaced files in {root}")
-
-    # Basic validation: ensure language token exists in final vocab
-    with open(os.path.join(root, 'vocab.json'), 'r', encoding='utf-8') as f:
-        final_vocab = json.load(f)
-    lang_token = f"[{args.language}]"
-    if lang_token in final_vocab:
-        print(f"    ✓ Verified presence of language token '{lang_token}' in final vocab")
-    else:
-        raise ValueError(f"Language token '{lang_token}' not found in merged vocab.json")
-    
-    # Clean up temporary directories
-    print(f"\n[6/6] Cleaning up temporary files")
-    for temp_dir in [old_tokenizer_path, new_tokenizer_path, merged_tokenizer_path]:
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
-            print(f"    Removed {temp_dir}")
-    
-    print("\n" + "=" * 60)
-    print("VOCABULARY EXTENSION COMPLETED SUCCESSFULLY")
-    print("=" * 60)
-
-
-def adjust_config(args):
-    """
-    Update config.json to add Sinhala language support.
-    
-    Args:
-        args: Command line arguments
-    """
-    print("\n" + "=" * 60)
-    print("UPDATING CONFIG.JSON FOR SINHALA")
-    print("=" * 60)
-    
-    config_path = os.path.join(args.output_path, "XTTS_v2.0_original_model_files/config.json")
-    
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(f"config.json not found at {config_path}. Please download XTTS-v2 model first.")
-    
-    print(f"\n[1/3] Loading config.json from {config_path}")
-    with open(config_path, "r", encoding='utf-8') as f:
-        config = json.load(f)
-    
-    # Add language to supported languages if not already present
-    if "languages" not in config:
-        config["languages"] = []
-    
-    if args.language not in config["languages"]:
-        config["languages"].append(args.language)
-        print(f"    Added '{args.language}' to supported languages")
-    else:
-        print(f"    Language '{args.language}' already in supported languages")
-    
-    # Add language_settings for Sinhala
-    if "language_settings" not in config:
-        config["language_settings"] = {}
-    
-    if args.language not in config["language_settings"]:
-        config["language_settings"][args.language] = {
-            "use_phonemes": False,
-            "phoneme_language": None
+    @staticmethod
+    def update_config_for_sinhala(config_path, language_code="si"):
+        """
+        Update config.json to support Sinhala language.
+        
+        Args:
+            config_path: Path to config.json
+            language_code: Language code (default: 'si' for Sinhala)
+            
+        Raises:
+            FileNotFoundError: If config not found
+            ValueError: If update fails
+        """
+        print(f"\n{'='*80}")
+        print(f"UPDATING CONFIG.JSON FOR SINHALA")
+        print(f"{'='*80}")
+        
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"❌ Config file not found: {config_path}")
+        
+        try:
+            print(f"\n📖 Loading config from: {config_path}")
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            print(f"✅ Config loaded successfully")
+            
+        except Exception as e:
+            raise ValueError(f"❌ Error reading config: {str(e)}")
+        
+        # Add language_ids mapping
+        if 'language_ids' not in config:
+            config['language_ids'] = {}
+        
+        existing_ids = list(config['language_ids'].values()) if config['language_ids'] else []
+        language_id = max(existing_ids) + 1 if existing_ids else 21
+        
+        config['language_ids'][language_code] = language_id
+        print(f"\n✅ Added language_ids:")
+        print(f"   - Language: {language_code}")
+        print(f"   - ID: {language_id}")
+        
+        # Add language-specific settings
+        if 'languages' not in config:
+            config['languages'] = {}
+        
+        config['languages'][language_code] = {
+            'phoneme_language': None,  # Sinhala uses grapheme-based approach
+            'use_phonemes': False,     # No phoneme conversion needed
+            'name': 'Sinhala'
         }
-        print(f"    Added language settings for '{args.language}'")
-    else:
-        print(f"    Language settings for '{args.language}' already exist")
-        # Update existing settings
-        config["language_settings"][args.language]["use_phonemes"] = False
-        config["language_settings"][args.language]["phoneme_language"] = None
-        print(f"    Updated language settings for '{args.language}'")
-    
-    # Save updated config
-    print(f"\n[2/3] Saving updated config.json")
-    with open(config_path, 'w', encoding='utf-8') as f:
-        json.dump(config, f, indent=4, ensure_ascii=False)
-    print(f"    Config saved to {config_path}")
-    
-    # Verify update
-    print(f"\n[3/3] Verifying configuration")
-    with open(config_path, "r", encoding='utf-8') as f:
-        verify_config = json.load(f)
-    
-    if args.language in verify_config.get("languages", []):
-        print(f"    ✓ Language '{args.language}' confirmed in supported languages")
-    else:
-        raise ValueError(f"Language '{args.language}' not found in config after update")
-    
-    if args.language in verify_config.get("language_settings", {}):
-        print(f"    ✓ Language settings for '{args.language}' confirmed")
-    else:
-        raise ValueError(f"Language settings for '{args.language}' not found in config after update")
-    
-    print("\n" + "=" * 60)
-    print("CONFIG UPDATE COMPLETED SUCCESSFULLY")
-    print("=" * 60)
+        
+        print(f"✅ Added language settings:")
+        print(f"   - Phoneme language: None (grapheme-based)")
+        print(f"   - Use phonemes: False")
+        print(f"   - Language name: Sinhala")
+        
+        # Save updated config
+        try:
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+            
+            print(f"\n✅ Config saved successfully: {config_path}")
+            print(f"\n📊 Languages in config: {list(config.get('language_ids', {}).keys())}")
+            
+        except Exception as e:
+            raise ValueError(f"❌ Error saving config: {str(e)}")
 
 
 def main():
+    """Main execution function."""
+    
     parser = argparse.ArgumentParser(
-        description="Extend XTTS-v2 vocabulary and configuration for Sinhala language"
+        description="Extend XTTS-v2 vocabulary and config for Sinhala language",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Basic usage
+  python extend_vocab_sinhala.py \\
+    --metadata_path datasets/metadata_train.csv \\
+    --output_path checkpoints/XTTS_v2.0_original_model_files/
+
+  # With custom vocabulary size
+  python extend_vocab_sinhala.py \\
+    --metadata_path datasets/metadata_train.csv \\
+    --output_path checkpoints/XTTS_v2.0_original_model_files/ \\
+    --vocab_size 20000
+
+  # With explicit config path
+  python extend_vocab_sinhala.py \\
+    --metadata_path datasets/metadata_train.csv \\
+    --output_path checkpoints/XTTS_v2.0_original_model_files/ \\
+    --xtts_config checkpoints/XTTS_v2.0_original_model_files/config.json
+        """
     )
     
     parser.add_argument(
         "--metadata_path",
-        type=str,
         required=True,
-        help="Path to training metadata CSV file (pipe-separated format)"
+        help="Path to metadata_train.csv with Sinhala texts"
     )
     parser.add_argument(
         "--output_path",
-        type=str,
         required=True,
-        help="Path to output directory where XTTS-v2 model files are stored"
+        help="Output directory for vocabulary files (e.g., checkpoints/XTTS_v2.0_original_model_files/)"
     )
     parser.add_argument(
         "--language",
-        type=str,
         default="si",
-        help="Language code (default: 'si' for Sinhala)"
+        help="Language code (default: si for Sinhala)"
     )
     parser.add_argument(
         "--vocab_size",
         type=int,
-        default=2000,
-        help="Extended vocabulary size (default: 2000)"
+        default=15000,
+        help="Vocabulary size for BPE tokenizer (default: 15000)"
     )
     parser.add_argument(
-        "--special_tokens",
-        type=str,
-        nargs='+',
-        default=["<|im_start|>", "<|im_end|>", "<|endoftext|>", "<pad>"],
-        help="Special tokens for tokenizer (default: ['<|im_start|>', '<|im_end|>', '<|endoftext|>', '<pad>'])"
+        "--xtts_config",
+        default=None,
+        help="Path to XTTS config.json (auto-detect if not provided)"
     )
     
     args = parser.parse_args()
     
+    # Print header
+    print(f"\n{'='*80}")
+    print(f"SINHALA VOCABULARY EXTENSION FOR XTTS-v2")
+    print(f"{'='*80}")
+    print(f"\n📋 Configuration:")
+    print(f"   - Language: {args.language} (Sinhala)")
+    print(f"   - Vocabulary size: {args.vocab_size:,} tokens")
+    print(f"   - Metadata: {args.metadata_path}")
+    print(f"   - Output: {args.output_path}")
+    
     try:
-        # Extend vocabulary
-        extend_tokenizer(args)
+        # Step 1: Load Sinhala texts
+        print(f"\n{'─'*80}")
+        print(f"STEP 1: LOADING SINHALA TEXTS")
+        print(f"{'─'*80}")
         
-        # Update config
-        adjust_config(args)
+        tokenizer = SinhalaBPETokenizer(vocab_size=args.vocab_size)
+        texts = tokenizer.load_sinhala_texts(args.metadata_path)
         
-        print("\n" + "=" * 60)
-        print("ALL OPERATIONS COMPLETED SUCCESSFULLY")
-        print("=" * 60)
+        # Step 2: Train BPE tokenizer
+        print(f"\n{'─'*80}")
+        print(f"STEP 2: TRAINING BPE TOKENIZER")
+        print(f"{'─'*80}")
+        
+        tokenizer.train_tokenizer(texts)
+        
+        # Step 3: Save vocabulary (CRITICAL: no subdirectory)
+        print(f"\n{'─'*80}")
+        print(f"STEP 3: SAVING VOCABULARY")
+        print(f"{'─'*80}")
+        
+        vocab_file, tokenizer_file = tokenizer.save_vocabulary(args.output_path)
+        
+        # Step 4: Update config
+        print(f"\n{'─'*80}")
+        print(f"STEP 4: UPDATING CONFIG")
+        print(f"{'─'*80}")
+        
+        config_path = args.xtts_config
+        
+        if not config_path:
+            # Auto-detect config path
+            search_paths = [
+                os.path.join(args.output_path, "config.json"),
+                os.path.join(os.path.dirname(args.output_path), "config.json"),
+                os.path.join(args.output_path, "XTTS_v2.0_original_model_files", "config.json"),
+            ]
+            config_path = ConfigUpdater.find_config_file(search_paths)
+        
+        if config_path and os.path.exists(config_path):
+            ConfigUpdater.update_config_for_sinhala(config_path, language_code=args.language)
+        else:
+            print(f"\n⚠️ WARNING: Config file not found")
+            print(f"   You can manually add language settings to config.json:")
+            print(f"""
+   {{
+       "language_ids": {{"si": 21}},
+       "languages": {{
+           "si": {{
+               "phoneme_language": null,
+               "use_phonemes": false,
+               "name": "Sinhala"
+           }}
+       }}
+   }}
+            """)
+        
+        # Success summary
+        print(f"\n{'='*80}")
+        print(f"✅ VOCABULARY EXTENSION COMPLETE!")
+        print(f"{'='*80}")
+        
+        print(f"\n📍 Output files created:")
+        print(f"   ✅ {vocab_file}")
+        print(f"   ✅ {tokenizer_file}")
+        if config_path and os.path.exists(config_path):
+            print(f"   ✅ {config_path} (updated)")
+        
+        print(f"\n🚀 Ready for GPT fine-tuning!")
+        print(f"   Use command:")
+        print(f"   CUDA_VISIBLE_DEVICES=0 python train_gpt_xtts.py \\")
+        print(f"     --output_path {args.output_path} \\")
+        print(f"     --metadatas <path_to_train>,<path_to_eval>,{args.language} \\")
+        print(f"     --num_epochs 5 \\")
+        print(f"     --batch_size 8")
+        print(f"\n{'='*80}\n")
         
     except Exception as e:
         print(f"\n❌ ERROR: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return 1
-    
-    return 0
+        print(f"\n{'='*80}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    exit(main())
-
+    main()
