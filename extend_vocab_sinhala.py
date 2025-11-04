@@ -89,13 +89,14 @@ def extend_tokenizer(args):
     if not os.path.exists(vocab_json_path):
         raise FileNotFoundError(f"Original vocab.json not found at {vocab_json_path}. Please download XTTS-v2 model first.")
     
-    print(f"\n[1/6] Loading existing tokenizer from {vocab_json_path}")
-    existing_tokenizer = Tokenizer.from_file(vocab_json_path)
-    
-    # Save existing tokenizer separately
+    print(f"\n[1/6] Backing up existing tokenizer files")
     old_tokenizer_path = os.path.join(root, "old_tokenizer/")
     os.makedirs(old_tokenizer_path, exist_ok=True)
-    existing_tokenizer.model.save(old_tokenizer_path)
+    # Copy existing vocab/merges into backup folder
+    shutil.copy(os.path.join(root, "vocab.json"), os.path.join(old_tokenizer_path, "vocab.json"))
+    merges_src = os.path.join(root, "merges.txt")
+    if os.path.exists(merges_src):
+        shutil.copy(merges_src, os.path.join(old_tokenizer_path, "merges.txt"))
     print(f"    Saved existing tokenizer to {old_tokenizer_path}")
     
     # Load Sinhala text from metadata
@@ -149,18 +150,22 @@ def extend_tokenizer(args):
     )
     print(f"    Merged tokenizer saved to {merged_tokenizer_path}")
     
-    # Load merged tokenizer and update vocab.json
-    print(f"\n[5/6] Updating vocab.json with merged tokenizer")
-    tokenizer = Tokenizer.from_file(vocab_json_path)
-    tokenizer.model = tokenizer.model.from_file(
-        os.path.join(merged_tokenizer_path, 'vocab.json'),
-        os.path.join(merged_tokenizer_path, 'merges.txt')
-    )
-    tokenizer.add_special_tokens([f"[{args.language}]"])
-    
-    # Save updated vocab.json
-    tokenizer.save(vocab_json_path)
-    print(f"    Updated vocab.json saved to {vocab_json_path}")
+    # Overwrite original vocab/merges with merged ones
+    print(f"\n[5/6] Overwriting original vocab/merges with merged tokenizer")
+    shutil.copy(os.path.join(merged_tokenizer_path, 'vocab.json'), os.path.join(root, 'vocab.json'))
+    merged_merges = os.path.join(merged_tokenizer_path, 'merges.txt')
+    if os.path.exists(merged_merges):
+        shutil.copy(merged_merges, os.path.join(root, 'merges.txt'))
+    print(f"    Replaced files in {root}")
+
+    # Basic validation: ensure language token exists in final vocab
+    with open(os.path.join(root, 'vocab.json'), 'r', encoding='utf-8') as f:
+        final_vocab = json.load(f)
+    lang_token = f"[{args.language}]"
+    if lang_token in final_vocab:
+        print(f"    ✓ Verified presence of language token '{lang_token}' in final vocab")
+    else:
+        raise ValueError(f"Language token '{lang_token}' not found in merged vocab.json")
     
     # Clean up temporary directories
     print(f"\n[6/6] Cleaning up temporary files")
