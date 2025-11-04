@@ -1,0 +1,475 @@
+#!/usr/bin/env python3
+"""
+Sinhala Language Configuration for XTTS-v2 Fine-tuning on Kaggle
+
+This module centralizes all configuration parameters for the Sinhala XTTS-v2 training pipeline:
+- Language settings
+- Path configuration
+- Training hyperparameters
+- Dataset parameters
+- Model parameters
+
+Language: Sinhala (සිංහල)
+Language Code: si (ISO 639-1)
+Script: Sinhala script (abugida)
+Unicode Range: U+0D80 to U+0DFF
+"""
+
+import os
+from pathlib import Path
+
+
+# ============================================================================
+# LANGUAGE CONFIGURATION
+# ============================================================================
+
+LANGUAGE_CODE = "si"  # Sinhala language code (ISO 639-1)
+LANGUAGE_NAME = "Sinhala"
+LANGUAGE_SCRIPT = "Sinhala script (abugida)"
+
+
+# ============================================================================
+# KAGGLE PATHS
+# ============================================================================
+
+# Input dataset from Kaggle
+KAGGLE_DATASET_PATH = "/kaggle/input/sinhala-tts-dataset/sinhala-tts-dataset"
+
+# Working directory on Kaggle
+KAGGLE_WORKING_PATH = "/kaggle/working"
+
+# Note: These paths are specific to Kaggle environment
+# If running locally, adjust KAGGLE_WORKING_PATH to your local directory
+
+
+# ============================================================================
+# DERIVED PATHS (Auto-generated from base paths)
+# ============================================================================
+
+# Dataset output directory (formatted for XTTS)
+DATASET_OUTPUT_PATH = os.path.join(KAGGLE_WORKING_PATH, "datasets")
+
+# Model checkpoints directory
+CHECKPOINT_PATH = os.path.join(KAGGLE_WORKING_PATH, "checkpoints")
+
+# Original XTTS-v2 model files directory
+XTTS_MODEL_PATH = os.path.join(CHECKPOINT_PATH, "XTTS_v2.0_original_model_files")
+
+# Training output directory
+TRAINING_OUTPUT_PATH = os.path.join(CHECKPOINT_PATH, "run", "training")
+
+
+# ============================================================================
+# VOCABULARY CONFIGURATION
+# ============================================================================
+
+# Extended vocabulary size for BPE tokenizer
+# Larger size = better coverage of Sinhala text, but slower training
+# Recommended: 15000-20000 for Sinhala
+EXTENDED_VOCAB_SIZE = 15000
+
+# Tokenization method: ByteLevel BPE (Byte-Pair Encoding)
+TOKENIZER_TYPE = "ByteLevel BPE"
+
+# Minimum token frequency (prevents rare tokens)
+MIN_TOKEN_FREQUENCY = 2
+
+# Special tokens for the tokenizer
+SPECIAL_TOKENS = [
+    "<|endoftext|>",
+    "<|im_start|>",
+    "<|im_end|>",
+    "<pad>",
+    "<unk>",
+]
+
+
+# ============================================================================
+# TRAINING PARAMETERS - DVAE (Optional, usually not needed)
+# ============================================================================
+
+# DVAE (Differentiable VAE) fine-tuning
+# Only needed if you have 20+ hours of Sinhala audio data
+DVAE_BATCH_SIZE = 512
+DVAE_LEARNING_RATE = 5e-6
+DVAE_EPOCHS = 5
+DVAE_WEIGHT_DECAY = 1e-2
+
+
+# ============================================================================
+# TRAINING PARAMETERS - GPT (Main Training)
+# ============================================================================
+
+# Number of training epochs
+# Higher = more training, but risk of overfitting
+# Recommended: 5-10 for new language
+NUM_EPOCHS = 5
+
+# Batch size for training
+# Larger = faster training, but more GPU memory
+# Recommended: 8 (for 40GB GPU), 4 (for 16GB GPU)
+BATCH_SIZE = 8
+
+# Gradient accumulation steps
+# Effective batch size = BATCH_SIZE * GRADIENT_ACCUMULATION
+# Use this if you get OOM (out of memory) errors
+GRADIENT_ACCUMULATION = 4
+
+# Learning rate for the optimizer (AdamW)
+# Lower = slower but more stable learning
+# Recommended: 5e-6 for Sinhala (conservative)
+LEARNING_RATE = 5e-6
+
+# Weight decay (L2 regularization)
+# Prevents overfitting
+WEIGHT_DECAY = 1e-2
+
+# Save checkpoint every N training steps
+SAVE_STEP = 50000
+
+# Optimizer parameters
+OPTIMIZER = "AdamW"
+OPTIMIZER_BETAS = (0.9, 0.96)
+OPTIMIZER_EPS = 1e-8
+
+
+# ============================================================================
+# TEXT & AUDIO PARAMETERS
+# ============================================================================
+
+# Maximum text length (in tokens)
+# Sinhala sentences typically 10-400 tokens
+MAX_TEXT_LENGTH = 400
+
+# Maximum audio length (in samples)
+# At 24kHz: 330750 samples ≈ 13.6 seconds
+# Adjust based on your dataset
+MAX_AUDIO_LENGTH = 330750
+
+# Audio sample rates
+AUDIO_SAMPLE_RATE = 22050  # Training sample rate
+AUDIO_OUTPUT_SAMPLE_RATE = 24000  # Output sample rate (XTTS standard)
+
+# GPT conditioning parameters
+GPT_MAX_CONDITIONING_LENGTH = 132300  # ~6 seconds at 22050 Hz
+GPT_MIN_CONDITIONING_LENGTH = 11025   # ~0.5 seconds at 22050 Hz
+
+
+# ============================================================================
+# SINHALA TEST TEXTS
+# ============================================================================
+
+SINHALA_TEST_TEXTS = [
+    "නිරන්තරයි ඉතා වැදගත්",  # "Always very important"
+    "ශ්‍රී ලංකා ඔබේ උතුරුදෙසින්",  # "Sri Lanka from your north"
+    "සිංහල භාෂාව අපගේ ජාතික භාෂාවයි",  # "Sinhala is our national language"
+    "ගුණවත් අධ්‍යාපනය සඳහා උත්සාහ කරමු",  # "Let us strive for quality education"
+    "තරුණ පරපුරට භරක ඉතිහාසයක් සිදු කරමු",  # "Create a bright history for the younger generation"
+]
+
+
+# ============================================================================
+# DATASET PARAMETERS
+# ============================================================================
+
+# Metadata CSV file format: audio_file|text|speaker_name
+METADATA_FILE_FORMAT = "audio_file|text|speaker_name"
+
+# Train-test split ratio
+# 0.9 means 90% training, 10% evaluation
+TRAIN_EVAL_SPLIT = 0.9
+
+# Maximum evaluation split size
+MAX_EVAL_SPLIT_SIZE = 256
+
+
+# ============================================================================
+# GPU & COMPUTATION PARAMETERS
+# ============================================================================
+
+# PyTorch CUDA memory configuration
+PYTORCH_CUDA_ALLOC_CONF = "max_split_size_mb:512"
+
+# Whether to use DeepSpeed for training
+USE_DEEPSPEED = False
+
+# Number of data loading workers
+NUM_LOADER_WORKERS = 8
+
+# Evaluation frequency
+EVAL_STEP = 100
+PLOT_STEP = 100
+LOG_MODEL_STEP = 100
+PRINT_STEP = 50
+
+
+# ============================================================================
+# LOGGING & MONITORING
+# ============================================================================
+
+# TensorBoard logging
+USE_TENSORBOARD = True
+DASHBOARD_LOGGER = "tensorboard"
+
+# Run name for tracking
+RUN_NAME = "GPT_XTTS_FT_Sinhala"
+PROJECT_NAME = "XTTS_Sinhala_Trainer"
+RUN_DESCRIPTION = "GPT XTTS fine-tuning for Sinhala language"
+
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def get_kaggle_paths():
+    """
+    Get dictionary of all Kaggle-specific paths.
+    
+    This function returns a dictionary of all required paths for the
+    training pipeline on Kaggle.
+    
+    Returns:
+        dict: Dictionary with keys:
+            - dataset_path: Input dataset location
+            - output_path: Formatted dataset output
+            - checkpoint_path: Model checkpoints
+            - model_files_path: XTTS-v2 model files
+            - training_output: Training artifacts
+            
+    Example:
+        >>> paths = get_kaggle_paths()
+        >>> print(paths['dataset_path'])
+        '/kaggle/input/sinhala-tts-dataset/sinhala-tts-dataset'
+    """
+    return {
+        "dataset_path": KAGGLE_DATASET_PATH,
+        "output_path": DATASET_OUTPUT_PATH,
+        "checkpoint_path": CHECKPOINT_PATH,
+        "model_files_path": XTTS_MODEL_PATH,
+        "training_output": TRAINING_OUTPUT_PATH
+    }
+
+
+def validate_configuration():
+    """
+    Validate configuration parameters.
+    
+    Checks:
+    - Path validity
+    - Parameter ranges
+    - Consistency
+    
+    Returns:
+        tuple: (is_valid, error_messages)
+        
+    Example:
+        >>> is_valid, errors = validate_configuration()
+        >>> if not is_valid:
+        ...     for error in errors:
+        ...         print(error)
+    """
+    errors = []
+    
+    # Validate paths
+    if not KAGGLE_DATASET_PATH:
+        errors.append("❌ KAGGLE_DATASET_PATH not set")
+    
+    if not KAGGLE_WORKING_PATH:
+        errors.append("❌ KAGGLE_WORKING_PATH not set")
+    
+    # Validate numeric parameters
+    if BATCH_SIZE < 1:
+        errors.append(f"❌ BATCH_SIZE must be >= 1, got {BATCH_SIZE}")
+    
+    if NUM_EPOCHS < 1:
+        errors.append(f"❌ NUM_EPOCHS must be >= 1, got {NUM_EPOCHS}")
+    
+    if LEARNING_RATE <= 0:
+        errors.append(f"❌ LEARNING_RATE must be > 0, got {LEARNING_RATE}")
+    
+    if EXTENDED_VOCAB_SIZE < 5000:
+        errors.append(f"❌ EXTENDED_VOCAB_SIZE should be >= 5000, got {EXTENDED_VOCAB_SIZE}")
+    
+    if EXTENDED_VOCAB_SIZE > 50000:
+        errors.append(f"❌ EXTENDED_VOCAB_SIZE should be <= 50000, got {EXTENDED_VOCAB_SIZE}")
+    
+    # Validate text/audio parameters
+    if MAX_TEXT_LENGTH < 50:
+        errors.append(f"❌ MAX_TEXT_LENGTH too small: {MAX_TEXT_LENGTH}")
+    
+    if MAX_AUDIO_LENGTH < 22050:
+        errors.append(f"❌ MAX_AUDIO_LENGTH too small (< 1 sec): {MAX_AUDIO_LENGTH}")
+    
+    if GRADIENT_ACCUMULATION < 1:
+        errors.append(f"❌ GRADIENT_ACCUMULATION must be >= 1, got {GRADIENT_ACCUMULATION}")
+    
+    # All validations passed
+    is_valid = len(errors) == 0
+    
+    return is_valid, errors
+
+
+def print_config():
+    """
+    Print all configuration parameters in a formatted way.
+    
+    Displays organized configuration information for verification before training.
+    Useful for debugging and confirming settings before long training runs.
+    
+    Example:
+        >>> print_config()
+        ================================================================================
+        SINHALA XTTS-v2 CONFIGURATION
+        ================================================================================
+        
+        [Language Settings]
+        ...
+    """
+    print("\n" + "=" * 80)
+    print("SINHALA XTTS-v2 KAGGLE TRAINING CONFIGURATION")
+    print("=" * 80)
+    
+    # Validate configuration first
+    is_valid, errors = validate_configuration()
+    
+    if not is_valid:
+        print("\n⚠️ CONFIGURATION WARNINGS:")
+        for error in errors:
+            print(f"   {error}")
+        print()
+    
+    # Language Settings
+    print(f"\n[Language Settings]")
+    print(f"  Language Code: {LANGUAGE_CODE}")
+    print(f"  Language Name: {LANGUAGE_NAME}")
+    print(f"  Script: {LANGUAGE_SCRIPT}")
+    
+    # Path Settings
+    print(f"\n[Path Settings]")
+    print(f"  Dataset: {KAGGLE_DATASET_PATH}")
+    print(f"  Working: {KAGGLE_WORKING_PATH}")
+    print(f"  Output: {DATASET_OUTPUT_PATH}")
+    print(f"  Checkpoints: {CHECKPOINT_PATH}")
+    
+    # Vocabulary Settings
+    print(f"\n[Vocabulary]")
+    print(f"  Type: {TOKENIZER_TYPE}")
+    print(f"  Size: {EXTENDED_VOCAB_SIZE:,} tokens")
+    print(f"  Min Frequency: {MIN_TOKEN_FREQUENCY}")
+    print(f"  Special Tokens: {len(SPECIAL_TOKENS)}")
+    
+    # Training Parameters
+    print(f"\n[Training Parameters]")
+    print(f"  Epochs: {NUM_EPOCHS}")
+    print(f"  Batch Size: {BATCH_SIZE}")
+    print(f"  Gradient Accumulation: {GRADIENT_ACCUMULATION}")
+    print(f"  Effective Batch: {BATCH_SIZE * GRADIENT_ACCUMULATION}")
+    print(f"  Learning Rate: {LEARNING_RATE:.0e}")
+    print(f"  Weight Decay: {WEIGHT_DECAY:.0e}")
+    print(f"  Save Step: {SAVE_STEP:,}")
+    
+    # Text/Audio Parameters
+    print(f"\n[Text & Audio]")
+    print(f"  Max Text Length: {MAX_TEXT_LENGTH} tokens")
+    print(f"  Max Audio Length: {MAX_AUDIO_LENGTH} samples (~{MAX_AUDIO_LENGTH/24000:.1f}s)")
+    print(f"  Sample Rate: {AUDIO_SAMPLE_RATE} Hz (training)")
+    print(f"  Output Sample Rate: {AUDIO_OUTPUT_SAMPLE_RATE} Hz")
+    
+    # Computation
+    print(f"\n[Computation]")
+    print(f"  Optimizer: {OPTIMIZER}")
+    print(f"  Use DeepSpeed: {USE_DEEPSPEED}")
+    print(f"  Loader Workers: {NUM_LOADER_WORKERS}")
+    
+    # Logging
+    print(f"\n[Logging & Monitoring]")
+    print(f"  Dashboard: {DASHBOARD_LOGGER}")
+    print(f"  Run Name: {RUN_NAME}")
+    print(f"  Project: {PROJECT_NAME}")
+    
+    print("\n" + "=" * 80)
+    
+    # Status
+    if is_valid:
+        print("✅ Configuration is VALID\n")
+    else:
+        print("⚠️ Configuration has WARNINGS\n")
+
+
+def print_test_texts():
+    """
+    Print Sinhala test texts.
+    
+    Displays sample Sinhala texts that can be used for inference testing
+    after training is complete.
+    
+    Example:
+        >>> print_test_texts()
+        📝 SINHALA TEST TEXTS:
+        1. නිරන්තරයි ඉතා වැදගත්
+        ...
+    """
+    print("\n📝 SINHALA TEST TEXTS:")
+    for i, text in enumerate(SINHALA_TEST_TEXTS, 1):
+        print(f"   {i}. {text}")
+    print()
+
+
+def get_effective_batch_size():
+    """
+    Calculate effective batch size considering gradient accumulation.
+    
+    Returns:
+        int: Effective batch size = BATCH_SIZE * GRADIENT_ACCUMULATION
+        
+    Example:
+        >>> eff_batch = get_effective_batch_size()
+        >>> print(f"Effective batch size: {eff_batch}")
+        Effective batch size: 32
+    """
+    return BATCH_SIZE * GRADIENT_ACCUMULATION
+
+
+def get_config_summary():
+    """
+    Get a compact summary of the configuration.
+    
+    Returns:
+        str: Summary string with key parameters
+        
+    Example:
+        >>> summary = get_config_summary()
+        >>> print(summary)
+        Sinhala XTTS-v2 | 5 epochs | BS 8 | LR 5e-06 | ...
+    """
+    summary = (
+        f"Sinhala XTTS-v2 | "
+        f"{NUM_EPOCHS} epochs | "
+        f"BS {BATCH_SIZE} | "
+        f"LR {LEARNING_RATE:.0e} | "
+        f"Vocab {EXTENDED_VOCAB_SIZE:,} | "
+        f"MaxAudio {MAX_AUDIO_LENGTH//24000}s"
+    )
+    return summary
+
+
+# ============================================================================
+# INITIALIZATION & VERIFICATION
+# ============================================================================
+
+if __name__ == "__main__":
+    """
+    When run directly, displays configuration and verifies setup.
+    """
+    print_config()
+    print_test_texts()
+    
+    # Verify configuration
+    is_valid, errors = validate_configuration()
+    
+    if is_valid:
+        print("✅ Configuration validation PASSED")
+    else:
+        print("⚠️ Configuration validation had warnings:")
+        for error in errors:
+            print(f"   {error}")
