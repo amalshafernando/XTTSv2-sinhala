@@ -89,19 +89,75 @@ def convert_metadata(kaggle_path, output_path):
     print(f"    Train: {metadata_train_path}")
     print(f"    Eval: {metadata_eval_path}")
     
-    # Read metadata files
-    train_df = pd.read_csv(metadata_train_path)
-    eval_df = pd.read_csv(metadata_eval_path)
+    # Try to read CSV files - first attempt with default separator (comma)
+    # If that results in a single column with pipe-separated values, we'll parse it
+    try:
+        train_df = pd.read_csv(metadata_train_path)
+        eval_df = pd.read_csv(metadata_eval_path)
+    except Exception as e:
+        print(f"    ⚠ Error reading CSV with default separator: {e}")
+        # Try with pipe separator
+        try:
+            train_df = pd.read_csv(metadata_train_path, sep='|')
+            eval_df = pd.read_csv(metadata_eval_path, sep='|')
+            print(f"    ✓ Successfully read with pipe separator")
+        except Exception as e2:
+            raise ValueError(f"Failed to read CSV files: {e2}")
     
     print(f"    Train samples: {len(train_df)}")
     print(f"    Eval samples: {len(eval_df)}")
+    
+    # Check if CSV has pipe-separated format (single column with pipe-separated values)
+    # This handles CSVs with format: "audio_file_path|transcript|speaker_id"
+    def parse_pipe_separated_csv(df, df_name):
+        """Parse pipe-separated CSV format into separate columns."""
+        # Check if we have a single column that looks like pipe-separated format
+        if len(df.columns) == 1:
+            col_name = df.columns[0]
+            # Check if column name or first row contains pipe separator
+            has_pipe_in_header = '|' in col_name
+            has_pipe_in_data = len(df) > 0 and '|' in str(df.iloc[0, 0])
+            
+            if has_pipe_in_header or has_pipe_in_data:
+                print(f"    Detected pipe-separated format in {df_name} CSV")
+                # Split the single column into multiple columns
+                # First, check if header has pipe separator
+                if has_pipe_in_header:
+                    # Column name is the header: "audio_file_path|transcript|speaker_id"
+                    header_parts = [part.strip() for part in col_name.split('|')]
+                    if len(header_parts) == 3:
+                        # Split each row by pipe
+                        df[header_parts] = df[col_name].str.split('|', expand=True, n=2)
+                        df = df.drop(columns=[col_name])
+                    else:
+                        raise ValueError(f"Cannot parse {df_name} CSV header: expected 3 columns, got {len(header_parts)}")
+                else:
+                    # No header with pipes, split data rows
+                    # Try to infer column names from first row or use defaults
+                    df_split = df[col_name].str.split('|', expand=True)
+                    if len(df_split.columns) == 3:
+                        df_split.columns = ['audio_file_path', 'transcript', 'speaker_id']
+                        df = df_split
+                    else:
+                        raise ValueError(f"Cannot parse {df_name} CSV: expected 3 pipe-separated columns, got {len(df_split.columns)}")
+                
+                # Clean up any extra whitespace
+                for col in df.columns:
+                    if df[col].dtype == 'object':
+                        df[col] = df[col].str.strip()
+        
+        return df
+    
+    # Parse pipe-separated format if needed
+    train_df = parse_pipe_separated_csv(train_df, "train")
+    eval_df = parse_pipe_separated_csv(eval_df, "eval")
     
     # Verify required columns exist
     required_columns = {"audio_file_path", "transcript", "speaker_id"}
     for df_name, df in [("train", train_df), ("eval", eval_df)]:
         missing_cols = required_columns - set(df.columns)
         if missing_cols:
-            raise ValueError(f"{df_name} metadata missing required columns: {missing_cols}")
+            raise ValueError(f"{df_name} metadata missing required columns: {missing_cols}. Found columns: {list(df.columns)}")
     
     # Convert column names and format
     def convert_dataframe(df, split_name):

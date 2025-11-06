@@ -223,6 +223,7 @@ def phase_4_extend_vocabulary(model_files_path, train_metadata):
         sys.executable,
         "extend_vocab_sinhala.py",
         "--metadata_path", train_metadata,
+       # "--output_path", os.path.dirname(model_files_path),
         "--output_path", os.path.dirname(model_files_path),
         "--language", LANGUAGE_CODE,
         "--vocab_size", str(EXTENDED_VOCAB_SIZE)
