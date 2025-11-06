@@ -243,7 +243,7 @@ def convert_metadata(kaggle_path, output_path):
             output_file,
             sep="|",
             index=False,
-            header=False,
+            header=True,
             encoding='utf-8'
         )
         
