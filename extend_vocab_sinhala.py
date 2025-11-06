@@ -131,9 +131,12 @@ class SinhalaBPETokenizer:
             print(f"\n✅ Tokenizer initialized with ByteLevel pre-tokenizer")
             
             # Create BPE trainer
+            # Use min_frequency=1 for small datasets to reach target vocab size
+            # For larger datasets, min_frequency=2 is better
+            min_freq = 1 if len(texts) < 5000 else 2
             trainer = BpeTrainer(
                 vocab_size=self.vocab_size,
-                min_frequency=2,  # Prevents rare tokens
+                min_frequency=min_freq,  # Lower for small datasets
                 special_tokens=[
                     "<|endoftext|>",
                     "<|im_start|>",
@@ -145,7 +148,7 @@ class SinhalaBPETokenizer:
             )
             
             print(f"✅ BpeTrainer configured")
-            print(f"   - Min frequency: 2")
+            print(f"   - Min frequency: {min_freq}")
             print(f"   - Special tokens: 5")
             
             # Train on Sinhala corpus
@@ -305,7 +308,11 @@ class ConfigUpdater:
         print(f"   - ID: {language_id}")
         
         # Add language-specific settings
+        # Handle both dict and list formats for languages
         if 'languages' not in config:
+            config['languages'] = {}
+        elif isinstance(config['languages'], list):
+            # Convert list to dict if needed
             config['languages'] = {}
         
         config['languages'][language_code] = {

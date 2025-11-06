@@ -195,6 +195,7 @@ def convert_metadata(kaggle_path, output_path):
         # Try to find source audio directory
         source_audio_dir = None
         possible_dirs = [
+            os.path.join(kaggle_path, "wavs"),  # Check wavs first (most common)
             os.path.join(kaggle_path, "wav"),
             os.path.join(kaggle_path, "audio"),
             os.path.join(kaggle_path, "audio_files"),
