@@ -33,7 +33,7 @@ import argparse
 from pathlib import Path
 
 # CORRECTED IMPORTS - Import from TTS library, not local modules
-from TTS.trainer import Trainer, TrainerArgs
+from trainer import Trainer, TrainerArgs
 from TTS.config.shared_configs import BaseDatasetConfig
 from TTS.tts.datasets import load_tts_samples
 from TTS.tts.layers.xtts.trainer.gpt_trainer import (

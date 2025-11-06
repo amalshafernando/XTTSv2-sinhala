@@ -7,6 +7,7 @@ import os
 import sys
 import subprocess
 import gc
+import argparse
 
 # Set required environment variables before any imports
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
@@ -265,34 +266,42 @@ def phase_4_extend_vocabulary(model_files_path, train_metadata):
 
 
 def phase_5_dvae_finetuning(model_files_path, dataset_path):
-    """Phase 5: Optional DVAE fine-tuning (commented out by default)."""
+    """Phase 5: DVAE fine-tuning (enabled)."""
     print("\n" + "=" * 60)
-    print("PHASE 5: DVAE FINE-TUNING (OPTIONAL)")
+    print("PHASE 5: DVAE FINE-TUNING")
     print("=" * 60)
-    
-    print("\n[INFO] DVAE fine-tuning is skipped by default.")
-    print("       Uncomment this phase if you have >20 hours of training data.")
-    print("       To enable, uncomment the code in phase_5_dvae_finetuning() function.")
-    
-    # Uncomment the following code if you want to fine-tune DVAE:
-    # print(f"\n[1/2] Fine-tuning DVAE")
-    # if os.path.exists("train_dvae_xtts.py"):
-    #     cmd = [
-    #         sys.executable,
-    #         "train_dvae_xtts.py",
-    #         "--dataset_path", dataset_path,
-    #         "--output_path", os.path.dirname(model_files_path)
-    #     ]
-    #     result = subprocess.run(cmd, capture_output=True, text=True)
-    #     if result.returncode != 0:
-    #         print(f"    ⚠ DVAE fine-tuning had errors: {result.stderr}")
-    #     else:
-    #         print(f"    ✓ DVAE fine-tuning completed")
-    # else:
-    #     print(f"    ⚠ train_dvae_xtts.py not found, skipping DVAE fine-tuning")
-    
+
+    train_csv = os.path.join(dataset_path, "metadata_train.csv")
+    eval_csv = os.path.join(dataset_path, "metadata_eval.csv")
+    out_path = os.path.dirname(model_files_path)
+
+    if not (os.path.exists(train_csv) and os.path.exists(eval_csv)):
+        raise FileNotFoundError("DVAE: train/eval metadata CSV not found.")
+
+    print(f"\n[1/2] Fine-tuning DVAE")
+    if os.path.exists("train_dvae_xtts.py"):
+        cmd = [
+            sys.executable,
+            "train_dvae_xtts.py",
+            f"--output_path={out_path}",
+            f"--train_csv_path={train_csv}",
+            f"--eval_csv_path={eval_csv}",
+            '--language="si"',
+            "--num_epochs=3",
+            "--batch_size=256",
+            "--lr=5e-6",
+        ]
+        print("    Command:", " ".join(cmd))
+        result = subprocess.run(cmd, text=True)
+        if result.returncode != 0:
+            raise RuntimeError("DVAE fine-tuning failed")
+        else:
+            print(f"    ✓ DVAE fine-tuning completed")
+    else:
+        raise FileNotFoundError("train_dvae_xtts.py not found")
+
     print("\n" + "=" * 60)
-    print("PHASE 5 COMPLETED (SKIPPED)")
+    print("PHASE 5 COMPLETED")
     print("=" * 60)
 
 
@@ -316,10 +325,11 @@ def phase_6_gpt_finetuning(model_files_path, train_metadata, eval_metadata, outp
     print(f"    Learning rate: {LEARNING_RATE}")
     print(f"    Epochs: {NUM_EPOCHS}")
     
+    os.makedirs(output_path, exist_ok=True)  # ensure exists before run
     cmd = [
         sys.executable,
         "train_gpt_xtts.py",
-        "--output_path", output_path,
+        "--output_path", output_path,  # now a checkpoints/training dir
         "--metadatas", metadata_string,
         "--num_epochs", str(NUM_EPOCHS),
         "--batch_size", str(BATCH_SIZE),
@@ -328,7 +338,7 @@ def phase_6_gpt_finetuning(model_files_path, train_metadata, eval_metadata, outp
         "--max_text_length", str(MAX_TEXT_LENGTH),
         "--lr", str(LEARNING_RATE),
         "--weight_decay", str(WEIGHT_DECAY),
-        "--save_step", str(SAVE_STEP)
+        "--save_step", str(SAVE_STEP),
     ]
     
     print(f"\n[3/3] Command: {' '.join(cmd)}")
@@ -350,6 +360,16 @@ def phase_6_gpt_finetuning(model_files_path, train_metadata, eval_metadata, outp
 
 def main():
     """Main training pipeline."""
+    # ------------------------------------------------------------------
+    # CLI arguments
+    # ------------------------------------------------------------------
+    parser = argparse.ArgumentParser(description="XTTS-v2 Sinhala end-to-end pipeline")
+    parser.add_argument(
+        "--enable_dvae",
+        action="store_true",
+        help="Run DVAE fine-tuning (Phase 5). Optional; typically only beneficial with >20h audio.",
+    )
+    args, unknown = parser.parse_known_args()
     print("\n" + "=" * 80)
     print("XTTS-v2 SINHALA FINE-TUNING PIPELINE")
     print("=" * 80)
@@ -370,15 +390,21 @@ def main():
         # Phase 4: Extend vocabulary
         phase_4_extend_vocabulary(paths["model_files_path"], train_metadata)
         
-        # Phase 5: Optional DVAE fine-tuning
-        phase_5_dvae_finetuning(paths["model_files_path"], paths["output_path"])
+        # Phase 5: DVAE fine-tuning (optional)
+        if args.enable_dvae:
+            phase_5_dvae_finetuning(paths["model_files_path"], paths["output_path"])
+        else:
+            print("\n" + "=" * 60)
+            print("PHASE 5: DVAE FINE-TUNING (SKIPPED)")
+            print("=" * 60)
+            print("Info: Use --enable_dvae to run DVAE fine-tuning (recommended only for large datasets >20h)")
         
         # Phase 6: GPT fine-tuning
         phase_6_gpt_finetuning(
             paths["model_files_path"],
             train_metadata,
             eval_metadata,
-            paths["output_path"]
+            paths["training_output"]  # use a training output directory, not datasets
         )
         
         print("\n" + "=" * 80)
