@@ -4,12 +4,19 @@ This script converts the Kaggle dataset structure to the format expected by XTTS
 """
 
 import argparse
+import json
 import os
 import shutil
 from pathlib import Path
 
 import pandas as pd
 from tqdm import tqdm
+
+from sinhala_text_normalizer import (
+    NormalizationStats,
+    normalize_sinhala_text,
+    summarize_corpus,
+)
 
 
 def copy_audio_files(source_dir, dest_dir, audio_files):
@@ -61,6 +68,32 @@ def copy_audio_files(source_dir, dest_dir, audio_files):
                 print(f"      - {error}")
     
     return copied, skipped, errors
+
+
+def _normalize_texts(text_series: pd.Series) -> tuple[pd.Series, NormalizationStats]:
+    """Normalize Sinhala transcripts and return stats."""
+
+    originals = text_series.fillna("").astype(str).tolist()
+    normalized = [normalize_sinhala_text(text) for text in originals]
+    stats = NormalizationStats.from_pairs(list(zip(originals, normalized)))
+    return pd.Series(normalized, index=text_series.index), stats
+
+
+def _save_jsonl(df: pd.DataFrame, output_file: str, language: str = "si") -> str:
+    """Save metadata to JSONL with explicit language field."""
+
+    jsonl_path = Path(output_file).with_suffix(".jsonl")
+    with jsonl_path.open("w", encoding="utf-8") as f:
+        for record in df.itertuples(index=False):
+            entry = {
+                "audio_file": record.audio_file,
+                "text": record.text,
+                "speaker_name": record.speaker_name,
+                "language": language,
+            }
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    return str(jsonl_path)
 
 
 def convert_metadata(kaggle_path, output_path):
@@ -172,6 +205,18 @@ def convert_metadata(kaggle_path, output_path):
             "speaker_id": "speaker_name"
         })
         
+        # Normalize Sinhala text
+        normalized_texts, stats = _normalize_texts(df_xtts["text"].astype(str))
+        df_xtts["text"] = normalized_texts
+
+        print("    ✓ Sinhala text normalized")
+        if stats.sample_original:
+            print("      Example normalization:")
+            print(f"        BEFORE: {stats.sample_original}")
+            print(f"        AFTER : {stats.sample_normalized}")
+        print(f"      Removed zero-width chars: {stats.removed_zero_width}")
+        print(f"      Removed control chars : {stats.removed_control_chars}")
+
         # Update path format: change 'wav/' to 'wavs/'
         df_xtts["audio_file"] = df_xtts["audio_file"].str.replace("wav/", "wavs/", regex=False)
         df_xtts["audio_file"] = df_xtts["audio_file"].str.replace("\\", "/", regex=False)  # Normalize path separators
@@ -249,6 +294,15 @@ def convert_metadata(kaggle_path, output_path):
         
         print(f"    ✓ Saved {len(df_xtts)} samples to {output_file}")
         print(f"    Format: audio_file|text|speaker_name")
+
+        jsonl_path = _save_jsonl(df_xtts[["audio_file", "text", "speaker_name"]], output_file)
+        print(f"    ✓ JSONL manifest: {jsonl_path}")
+
+        corpus_stats = summarize_corpus(df_xtts["text"].tolist())
+        print("    ✓ Corpus stats after normalization:")
+        print(f"        Samples         : {corpus_stats['total_samples']}")
+        print(f"        Total characters: {corpus_stats['total_characters']}")
+        print(f"        Unique chars    : {corpus_stats['unique_characters']}")
         
         return df_xtts, output_file
     

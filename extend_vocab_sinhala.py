@@ -19,6 +19,8 @@ import argparse
 import json
 import os
 from pathlib import Path
+from typing import Iterable, List
+
 import pandas as pd
 from tokenizers import Tokenizer
 from tokenizers.models import BPE
@@ -27,6 +29,8 @@ from tokenizers.pre_tokenizers import ByteLevel
 from tokenizers.processors import ByteLevel as ByteLevelProcessor
 from tokenizers.decoders import ByteLevel as ByteLevelDecoder
 import sys
+
+from sinhala_text_normalizer import normalize_sinhala_text
 
 
 class SinhalaBPETokenizer:
@@ -67,20 +71,22 @@ class SinhalaBPETokenizer:
         
         if not os.path.exists(metadata_path):
             raise FileNotFoundError(f"❌ Metadata file not found: {metadata_path}")
+
+        path = Path(metadata_path)
+        texts: List[str]
+
+        if path.suffix.lower() == ".jsonl":
+            texts = self._load_from_jsonl(path)
+        else:
+            texts = self._load_from_csv(path)
         
-        try:
-            df = pd.read_csv(metadata_path, sep='|', encoding='utf-8', header=None)
-            print(f"✅ CSV loaded successfully")
-        except Exception as e:
-            raise ValueError(f"❌ Error reading CSV: {str(e)}")
-        
-        if df.shape[1] < 2:
-            raise ValueError(f"❌ CSV must have at least 2 columns (audio_file|text|speaker_name)")
-        
-        # Extract text column (typically column 1)
-        texts = df.iloc[:, 1].tolist()
-        
+        original_count = len(texts)
+        texts = list(dict.fromkeys(texts))  # Preserve order while deduplicating
+        deduped = original_count - len(texts)
+
         print(f"✅ Loaded {len(texts)} Sinhala text samples")
+        if deduped:
+            print(f"   - Removed {deduped} duplicate entries during normalization")
         
         # Show sample texts
         print(f"\n📝 Sample Sinhala texts:")
@@ -99,6 +105,68 @@ class SinhalaBPETokenizer:
         print(f"   - Total characters: {total_chars:,}")
         print(f"   - Sinhala characters: {sinhala_chars:,} ({100*sinhala_chars/max(total_chars,1):.1f}%)")
         
+        return texts
+
+    @staticmethod
+    def _load_from_csv(path: Path) -> List[str]:
+        """Load texts from CSV, handling both headered and headerless formats."""
+
+        read_kwargs = {
+            "sep": "|",
+            "encoding": "utf-8",
+            "dtype": str,
+        }
+
+        try:
+            df = pd.read_csv(path, **read_kwargs)
+        except Exception as exc:
+            raise ValueError(f"❌ Error reading CSV '{path}': {exc}")
+
+        if df.shape[1] == 0:
+            raise ValueError(f"❌ CSV '{path}' contains no columns")
+
+        # Attempt to locate the text column by name; fallback to column index 1.
+        text_column = None
+        for candidate in ("text", "transcript", 1):
+            if isinstance(candidate, str) and candidate in df.columns:
+                text_column = candidate
+                break
+            if candidate == 1 and df.shape[1] > 1:
+                text_column = df.columns[1]
+
+        if text_column is None:
+            raise ValueError(
+                "❌ Could not identify text column. Expected column named 'text' or second column in CSV."
+            )
+
+        texts = df[text_column].fillna("").astype(str).tolist()
+        texts = [normalize_sinhala_text(text) for text in texts if text.strip()]
+
+        if not texts:
+            raise ValueError(f"❌ No Sinhala texts found in CSV '{path}'")
+
+        return texts
+
+    @staticmethod
+    def _load_from_jsonl(path: Path) -> List[str]:
+        """Load texts from JSONL manifest."""
+
+        texts: List[str] = []
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    record = json.loads(line)
+                    text = normalize_sinhala_text(str(record.get("text", "")))
+                    if text:
+                        texts.append(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"❌ Invalid JSON in '{path}': {exc}")
+
+        if not texts:
+            raise ValueError(f"❌ No Sinhala texts found in JSONL '{path}'")
+
         return texts
     
     def train_tokenizer(self, texts):
@@ -143,6 +211,9 @@ class SinhalaBPETokenizer:
                     "<|im_end|>",
                     "<pad>",
                     "<unk>",
+                    "[SPACE]",
+                    "[STOP]",
+                    "[si]",
                 ],
                 show_progress=True
             )
@@ -159,6 +230,13 @@ class SinhalaBPETokenizer:
                 length=len(texts)
             )
             
+            # Ensure Sinhala language and XTTS control tokens exist
+            mandatory_tokens = ["[SPACE]", "[STOP]", "[si]"]
+            missing_tokens = [tok for tok in mandatory_tokens if self.tokenizer.token_to_id(tok) is None]
+            if missing_tokens:
+                print(f"   - Adding mandatory tokens: {missing_tokens}")
+                self.tokenizer.add_special_tokens(missing_tokens)
+
             self.vocab = self.tokenizer.get_vocab()
             print(f"\n✅ Training completed!")
             print(f"   - Actual vocabulary size: {len(self.vocab):,} tokens")
@@ -233,8 +311,17 @@ class SinhalaBPETokenizer:
             tokenizer_size = os.path.getsize(tokenizer_file) / 1024
             print(f"✅ Tokenizer saved: {tokenizer_file}")
             print(f"   - File size: {tokenizer_size:.1f} KB")
-            
-            return vocab_file, tokenizer_file
+
+            merges_file = os.path.join(output_path, "merges.txt")
+            merges = getattr(self.tokenizer.model, "get_merges", lambda: [])()
+            with open(merges_file, "w", encoding="utf-8") as f:
+                for pair in merges:
+                    # Merges are tuples of (token_a, token_b)
+                    if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                        f.write(f"{pair[0]} {pair[1]}\n")
+            print(f"✅ Merges saved: {merges_file}")
+
+            return vocab_file, tokenizer_file, merges_file
             
         except Exception as e:
             raise ValueError(f"❌ Error saving vocabulary: {str(e)}")
@@ -312,14 +399,39 @@ class ConfigUpdater:
         if 'languages' not in config:
             config['languages'] = {}
         elif isinstance(config['languages'], list):
-            # Convert list to dict if needed
-            config['languages'] = {}
-        
+            config['languages'] = {item.get('language', str(idx)): item for idx, item in enumerate(config['languages']) if isinstance(item, dict)}
+
         config['languages'][language_code] = {
             'phoneme_language': None,  # Sinhala uses grapheme-based approach
             'use_phonemes': False,     # No phoneme conversion needed
             'name': 'Sinhala'
         }
+
+        # Update tokenizer references to point to regenerated files
+        tokenizer_dir = os.path.dirname(config_path)
+        tokenizer_json = os.path.join(tokenizer_dir, "tokenizer.json")
+        vocab_json = os.path.join(tokenizer_dir, "vocab.json")
+        merges_txt = os.path.join(tokenizer_dir, "merges.txt")
+
+        tokenizer_section = config.get('tokenizer')
+        if isinstance(tokenizer_section, dict):
+            for key in ("config_path", "path", "tokenizer_path", "tokenizer_file"):
+                if key in tokenizer_section:
+                    tokenizer_section[key] = tokenizer_json
+            if 'vocab_path' in tokenizer_section:
+                tokenizer_section['vocab_path'] = vocab_json
+            if 'merges_path' in tokenizer_section:
+                tokenizer_section['merges_path'] = merges_txt
+        else:
+            config['tokenizer'] = {
+                'path': tokenizer_json,
+                'vocab_path': vocab_json,
+                'merges_path': merges_txt,
+            }
+
+        model_args = config.get('model_args')
+        if isinstance(model_args, dict) and 'tokenizer_file' in model_args:
+            model_args['tokenizer_file'] = tokenizer_json
         
         print(f"✅ Added language settings:")
         print(f"   - Phoneme language: None (grapheme-based)")
@@ -425,7 +537,7 @@ Examples:
         print(f"STEP 3: SAVING VOCABULARY")
         print(f"{'─'*80}")
         
-        vocab_file, tokenizer_file = tokenizer.save_vocabulary(args.output_path)
+        vocab_file, tokenizer_file, merges_file = tokenizer.save_vocabulary(args.output_path)
         
         # Step 4: Update config
         print(f"\n{'─'*80}")
@@ -469,6 +581,7 @@ Examples:
         print(f"\n📍 Output files created:")
         print(f"   ✅ {vocab_file}")
         print(f"   ✅ {tokenizer_file}")
+        print(f"   ✅ {merges_file}")
         if config_path and os.path.exists(config_path):
             print(f"   ✅ {config_path} (updated)")
         

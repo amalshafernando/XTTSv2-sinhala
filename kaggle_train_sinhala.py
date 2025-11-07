@@ -8,6 +8,7 @@ import sys
 import subprocess
 import gc
 import argparse
+import math
 
 # Set required environment variables before any imports
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
@@ -51,14 +52,23 @@ def phase_1_setup_verification():
     # Check PyTorch
     print(f"\n[1/4] PyTorch Version: {torch.__version__}")
     
+    gpu_info = []
+
     # Check CUDA
     print(f"[2/4] CUDA Available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         print(f"    CUDA Version: {torch.version.cuda}")
         print(f"    GPU Count: {torch.cuda.device_count()}")
         for i in range(torch.cuda.device_count()):
-            print(f"    GPU {i}: {torch.cuda.get_device_name(i)}")
-            print(f"      Memory: {torch.cuda.get_device_properties(i).total_memory / 1024**3:.2f} GB")
+            name = torch.cuda.get_device_name(i)
+            mem_gb = torch.cuda.get_device_properties(i).total_memory / 1024**3
+            gpu_info.append({
+                "index": i,
+                "name": name,
+                "memory_gb": mem_gb,
+            })
+            print(f"    GPU {i}: {name}")
+            print(f"      Memory: {mem_gb:.2f} GB")
     else:
         print("    ⚠ WARNING: CUDA not available. Training will be very slow.")
     
@@ -67,9 +77,17 @@ def phase_1_setup_verification():
     paths = get_kaggle_paths()
     for key, path in paths.items():
         print(f"    {key}: {path}")
-        if key != "dataset_path":  # Dataset path might not exist yet
-            os.makedirs(path, exist_ok=True)
-            print(f"      ✓ Directory exists/created")
+        if key == "dataset_path":
+            continue
+
+        target_dir = path
+        _, ext = os.path.splitext(path)
+        if ext:
+            target_dir = os.path.dirname(path)
+
+        if target_dir:
+            os.makedirs(target_dir, exist_ok=True)
+            print(f"      ✓ Directory ready: {target_dir}")
     
     # Check Python version
     print(f"\n[4/4] Python Version: {sys.version}")
@@ -78,7 +96,20 @@ def phase_1_setup_verification():
     print("PHASE 1 COMPLETED")
     print("=" * 60)
     
-    return paths
+    return paths, gpu_info
+
+
+def _count_samples(metadata_path):
+    count = 0
+    try:
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            for idx, _ in enumerate(f):
+                if idx == 0:
+                    continue  # skip header
+                count += 1
+    except FileNotFoundError:
+        return 0
+    return count
 
 
 def phase_2_prepare_dataset(kaggle_path, output_path):
@@ -128,7 +159,64 @@ def phase_2_prepare_dataset(kaggle_path, output_path):
     print("PHASE 2 COMPLETED")
     print("=" * 60)
     
-    return train_metadata, eval_metadata
+    dataset_stats = {
+        "train_samples": _count_samples(train_metadata),
+        "eval_samples": _count_samples(eval_metadata),
+    }
+
+    print(f"    ✓ Train samples: {dataset_stats['train_samples']}")
+    print(f"    ✓ Eval samples : {dataset_stats['eval_samples']}")
+
+    return train_metadata, eval_metadata, dataset_stats
+
+
+def auto_tune_training_params(gpu_info, dataset_stats):
+    """Derive batch size, accumulation, and scheduler settings for Kaggle GPU."""
+
+    batch_size = BATCH_SIZE
+    grad_accum = GRADIENT_ACCUMULATION
+    learning_rate = LEARNING_RATE
+    save_step = SAVE_STEP
+
+    # Adjust batch size based on the largest available GPU
+    max_mem = max((gpu.get("memory_gb", 0) for gpu in gpu_info), default=0)
+    if max_mem and max_mem < 16:
+        batch_size = max(2, batch_size // 2)
+        grad_accum = max(grad_accum, math.ceil((BATCH_SIZE * GRADIENT_ACCUMULATION) / batch_size))
+    elif 16 <= max_mem < 24:
+        batch_size = min(batch_size, 6)
+    elif max_mem >= 40:
+        batch_size = min(max(batch_size, 10), 12)
+
+    effective_original = BATCH_SIZE * GRADIENT_ACCUMULATION
+    effective_new = batch_size * grad_accum
+
+    if effective_new < effective_original and effective_new > 0:
+        scale = effective_new / effective_original
+        learning_rate = max(1e-6, LEARNING_RATE * scale)
+
+    train_samples = dataset_stats.get("train_samples", 0)
+    steps_per_epoch = max(1, math.ceil(train_samples / max(effective_new, 1)))
+    save_step = max(steps_per_epoch * 2, min(SAVE_STEP, steps_per_epoch * 10))
+
+    tuned = {
+        "batch_size": batch_size,
+        "grad_accum": grad_accum,
+        "learning_rate": learning_rate,
+        "save_step": save_step,
+        "steps_per_epoch": steps_per_epoch,
+        "effective_batch": effective_new,
+    }
+
+    print("\n[Auto-Tune] Training hyperparameters suggested:")
+    print(f"    Batch size        : {batch_size}")
+    print(f"    Grad accumulation : {grad_accum}")
+    print(f"    Effective batch   : {effective_new}")
+    print(f"    Learning rate     : {learning_rate:.2e}")
+    print(f"    Save step         : {save_step}")
+    print(f"    Steps per epoch   : {steps_per_epoch}")
+
+    return tuned
 
 
 def phase_3_download_model(model_files_path):
@@ -305,7 +393,7 @@ def phase_5_dvae_finetuning(model_files_path, dataset_path):
     print("=" * 60)
 
 
-def phase_6_gpt_finetuning(model_files_path, train_metadata, eval_metadata, output_path):
+def phase_6_gpt_finetuning(model_files_path, train_metadata, eval_metadata, output_path, training_params):
     """Phase 6: GPT fine-tuning with proper command construction."""
     print("\n" + "=" * 60)
     print("PHASE 6: GPT FINE-TUNING")
@@ -320,9 +408,15 @@ def phase_6_gpt_finetuning(model_files_path, train_metadata, eval_metadata, outp
     metadata_string = f"{train_metadata},{eval_metadata},{LANGUAGE_CODE}"
     
     print(f"\n[2/3] Running GPT fine-tuning")
-    print(f"    Batch size: {BATCH_SIZE}")
-    print(f"    Gradient accumulation: {GRADIENT_ACCUMULATION}")
-    print(f"    Learning rate: {LEARNING_RATE}")
+    batch_size = training_params.get("batch_size", BATCH_SIZE)
+    grad_accum = training_params.get("grad_accum", GRADIENT_ACCUMULATION)
+    learning_rate = training_params.get("learning_rate", LEARNING_RATE)
+    save_step = training_params.get("save_step", SAVE_STEP)
+
+    print(f"    Batch size: {batch_size}")
+    print(f"    Gradient accumulation: {grad_accum}")
+    print(f"    Learning rate: {learning_rate}")
+    print(f"    Save step: {save_step}")
     print(f"    Epochs: {NUM_EPOCHS}")
     
     os.makedirs(output_path, exist_ok=True)  # ensure exists before run
@@ -332,13 +426,13 @@ def phase_6_gpt_finetuning(model_files_path, train_metadata, eval_metadata, outp
         "--output_path", output_path,  # now a checkpoints/training dir
         "--metadatas", metadata_string,
         "--num_epochs", str(NUM_EPOCHS),
-        "--batch_size", str(BATCH_SIZE),
-        "--grad_acumm", str(GRADIENT_ACCUMULATION),
+        "--batch_size", str(batch_size),
+        "--grad_acumm", str(grad_accum),
         "--max_audio_length", str(MAX_AUDIO_LENGTH),
         "--max_text_length", str(MAX_TEXT_LENGTH),
-        "--lr", str(LEARNING_RATE),
+        "--lr", str(learning_rate),
         "--weight_decay", str(WEIGHT_DECAY),
-        "--save_step", str(SAVE_STEP),
+        "--save_step", str(save_step),
     ]
     
     print(f"\n[3/3] Command: {' '.join(cmd)}")
@@ -376,13 +470,15 @@ def main():
     
     try:
         # Phase 1: Setup verification
-        paths = phase_1_setup_verification()
+        paths, gpu_info = phase_1_setup_verification()
         
         # Phase 2: Dataset preparation
-        train_metadata, eval_metadata = phase_2_prepare_dataset(
+        train_metadata, eval_metadata, dataset_stats = phase_2_prepare_dataset(
             KAGGLE_DATASET_PATH,
             paths["output_path"]
         )
+
+        training_params = auto_tune_training_params(gpu_info, dataset_stats)
         
         # Phase 3: Download model
         phase_3_download_model(paths["model_files_path"])
@@ -404,7 +500,8 @@ def main():
             paths["model_files_path"],
             train_metadata,
             eval_metadata,
-            paths["training_output"]  # use a training output directory, not datasets
+            paths["training_output"],  # use a training output directory, not datasets
+            training_params,
         )
         
         print("\n" + "=" * 80)
