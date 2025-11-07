@@ -58,7 +58,7 @@ KAGGLE_WORKING_PATH = "/kaggle/working"
 # ============================================================================
 
 # Dataset output directory (formatted for XTTS)
-DATASET_OUTPUT_PATH = os.path.join(KAGGLE_WORKING_PATH, "datasets")
+DATASET_OUTPUT_PATH = os.path.join(KAGGLE_WORKING_PATH, "datasets_prepared")
 
 # Model checkpoints directory
 CHECKPOINT_PATH = os.path.join(KAGGLE_WORKING_PATH, "checkpoints")

@@ -39,7 +39,7 @@ class SinhalaBPETokenizer:
     SINHALA_UNICODE_START = 0x0D80
     SINHALA_UNICODE_END = 0x0DFF
     
-    def __init__(self, vocab_size=15000):
+    def __init__(self, vocab_size=50000):
         """
         Initialize Sinhala tokenizer.
         
